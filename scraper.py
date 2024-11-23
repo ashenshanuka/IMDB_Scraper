@@ -1,67 +1,155 @@
 import requests
 from bs4 import BeautifulSoup
 import re
-from database import create_connection, create_table, insert_movies
+import time
+import random
+import logging
+from database import DatabaseManager
+from config import SCRAPER_CONFIG
+from utils import (
+    clean_text, 
+    parse_year, 
+    parse_duration, 
+    parse_rating, 
+    parse_total_ratings
+)
 
-def scrape_imdb_top_250():
-    """Scrape IMDb Top 250 Movies"""
-    # IMDb Top 250 URL
-    url = 'https://www.imdb.com/chart/top/'
-    
-    # Headers to mimic browser request
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
-    
-    try:
-        # Send GET request
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s: %(message)s'
+)
+
+class IMDbScraper:
+    @classmethod
+    def extract_movie_details(cls, movie_html):
+        """
+        Extract detailed movie information from IMDb HTML element
         
-        # Parse HTML content
-        soup = BeautifulSoup(response.text, 'lxml')
+        :param movie_html: HTML string of a movie container
+        :return: Dictionary of movie details or None
+        """
+        soup = BeautifulSoup(movie_html, 'lxml')
         
-        # Find movie list container
-        movie_containers = soup.select('li.ipc-metadata-list-summary-item')
+        # Extract movie title and rank
+        title_elem = soup.select_one('.ipc-title__text')
+        if not title_elem:
+            return None
         
-        movies_data = []
+        # Extract rank and title
+        full_title = clean_text(title_elem.text)
+        if not full_title:
+            return None
         
-        # Extract movie details
-        for movie in movie_containers:
-            # Extract movie title
-            title_elem = movie.select_one('.ipc-title__text')
-            title = title_elem.text.split('. ', 1)[1] if title_elem else 'Unknown'
-            
+        rank_match = re.match(r'^(\d+)\.\s*(.+)$', full_title)
+        if not rank_match:
+            return None
+        
+        movie_rank = int(rank_match.group(1))
+        movie_title = clean_text(rank_match.group(2))
+        
+        # Extract metadata items
+        metadata_items = soup.select('.cli-title-metadata-item')
+        
+        # Default values
+        release_year = None
+        duration_minutes = None
+        
+        # Process metadata
+        if len(metadata_items) >= 2:
             # Extract year
-            year_elem = movie.select_one('.sc-14dd939d-6')
-            year = int(year_elem.text) if year_elem else None
+            release_year = parse_year(metadata_items[0].text)
             
-            # Extract rating
-            rating_elem = movie.select_one('.ipc-rating-star--imdb')
-            rating = float(rating_elem.text.split()[0]) if rating_elem else None
-            
-            # Extract total ratings
-            ratings_elem = movie.select_one('.sc-14dd939d-4')
-            total_ratings = int(re.sub(r'[^\d]', '', ratings_elem.text)) if ratings_elem else None
-            
-            movies_data.append((title, year, rating, total_ratings))
+            # Extract duration
+            duration_minutes = parse_duration(metadata_items[1].text)
         
-        # Database operations
-        connection = create_connection()
-        if connection:
-            create_table(connection)
-            insert_movies(connection, movies_data)
-            connection.close()
+        # Extract IMDb rating
+        rating_elem = soup.select_one('.ipc-rating-star--rating')
+        imdb_rating = parse_rating(rating_elem.text if rating_elem else None)
         
-        print(f"Successfully scraped top{len(movies_data)} movies!")
-    
-    except requests.RequestException as e:
-        print(f"Request error: {e}")
-    except Exception as e:
-        print(f"Scraping error: {e}")
+        # Extract total ratings
+        ratings_count_elem = soup.select_one('.ipc-rating-star--voteCount')
+        total_ratings = parse_total_ratings(
+            ratings_count_elem.text if ratings_count_elem else None
+        )
+        
+        # Validate essential details
+        if not all([movie_title, release_year, imdb_rating]):
+            return None
+        
+        return {
+            'rank': movie_rank,
+            'title': movie_title,
+            'year': release_year,
+            'duration': duration_minutes,
+            'rating': imdb_rating,
+            'total_ratings': total_ratings
+        }
+
+    @classmethod
+    def scrape_top_250(cls):
+        """
+        Scrape IMDb Top 250 Movies
+        
+        :return: List of scraped movie data
+        """
+        for attempt in range(SCRAPER_CONFIG['retry_attempts']):
+            try:
+                # Add random delay to avoid rate limiting
+                time.sleep(random.uniform(1, 3))
+                
+                # Send request
+                response = requests.get(
+                    SCRAPER_CONFIG['url'], 
+                    headers=SCRAPER_CONFIG['headers']
+                )
+                response.raise_for_status()
+                
+                # Parse HTML
+                soup = BeautifulSoup(response.text, 'lxml')
+                
+                # Find all movie containers
+                movie_containers = soup.select('.cli-children')
+                
+                # Prepare movies data
+                movies_data = []
+                
+                # Extract details for each movie
+                for container in movie_containers:
+                    movie_details = cls.extract_movie_details(str(container))
+                    
+                    # Add valid movie details
+                    if movie_details:
+                        movies_data.append((
+                            movie_details['rank'],
+                            movie_details['title'],
+                            movie_details['year'],
+                            movie_details['duration'],
+                            movie_details['rating'],
+                            movie_details['total_ratings']
+                        ))
+                
+                logging.info(f"Scraped {len(movies_data)} movies")
+                return movies_data
+            
+            except requests.RequestException as e:
+                logging.warning(f"Request attempt {attempt + 1} failed: {e}")
+                time.sleep(SCRAPER_CONFIG['retry_delay'])
+        
+        logging.error("Failed to scrape movies after multiple attempts")
+        return []
 
 def main():
-    scrape_imdb_top_250()
+    # Scrape movies
+    movies_data = IMDbScraper.scrape_top_250()
+    
+    # Save to database
+    if movies_data:
+        connection = DatabaseManager.create_connection()
+        if connection:
+            DatabaseManager.create_movies_table(connection)
+            DatabaseManager.insert_movies(connection, movies_data)
+            connection.close()
 
 if __name__ == "__main__":
     main()
