@@ -5,7 +5,8 @@ import time
 import random
 import logging
 from database import DatabaseManager
-from config import SCRAPER_CONFIG
+import mysql.connector
+from config import SCRAPER_CONFIG, DB_CONFIG
 from utils import (
     clean_text, 
     parse_year, 
@@ -21,22 +22,18 @@ logging.basicConfig(
 )
 
 class IMDbScraper:
+    def __init__(self):
+        self.db_name = DB_CONFIG['database']
+
     @classmethod
     def extract_movie_details(cls, movie_html):
-        """
-        Extract detailed movie information from IMDb HTML element
-        
-        :param movie_html: HTML string of a movie container
-        :return: Dictionary of movie details or None
-        """
         soup = BeautifulSoup(movie_html, 'lxml')
         
         # Extract movie title and rank
-        title_elem = soup.select_one('.ipc-title__text')
+        title_elem = soup.select_one('.ipc-title')
         if not title_elem:
             return None
         
-        # Extract rank and title
         full_title = clean_text(title_elem.text)
         if not full_title:
             return None
@@ -51,17 +48,8 @@ class IMDbScraper:
         # Extract metadata items
         metadata_items = soup.select('.cli-title-metadata-item')
         
-        # Default values
-        release_year = None
-        duration_minutes = None
-        
-        # Process metadata
-        if len(metadata_items) >= 2:
-            # Extract year
-            release_year = parse_year(metadata_items[0].text)
-            
-            # Extract duration
-            duration_minutes = parse_duration(metadata_items[1].text)
+        release_year = parse_year(metadata_items[0].text) if metadata_items else None
+        duration_minutes = parse_duration(metadata_items[1].text) if len(metadata_items) > 1 else None
         
         # Extract IMDb rating
         rating_elem = soup.select_one('.ipc-rating-star--rating')
@@ -69,11 +57,8 @@ class IMDbScraper:
         
         # Extract total ratings
         ratings_count_elem = soup.select_one('.ipc-rating-star--voteCount')
-        total_ratings = parse_total_ratings(
-            ratings_count_elem.text if ratings_count_elem else None
-        )
+        total_ratings = parse_total_ratings(ratings_count_elem.text if ratings_count_elem else None)
         
-        # Validate essential details
         if not all([movie_title, release_year, imdb_rating]):
             return None
         
@@ -88,37 +73,26 @@ class IMDbScraper:
 
     @classmethod
     def scrape_top_250(cls):
-        """
-        Scrape IMDb Top 250 Movies
-        
-        :return: List of scraped movie data
-        """
         for attempt in range(SCRAPER_CONFIG['retry_attempts']):
             try:
-                # Add random delay to avoid rate limiting
                 time.sleep(random.uniform(1, 3))
                 
-                # Send request
                 response = requests.get(
                     SCRAPER_CONFIG['url'], 
                     headers=SCRAPER_CONFIG['headers']
                 )
                 response.raise_for_status()
                 
-                # Parse HTML
                 soup = BeautifulSoup(response.text, 'lxml')
                 
                 # Find all movie containers
-                movie_containers = soup.select('.cli-children')
+                movie_containers = soup.select('.ipc-metadata-list-summary-item__tc')
                 
-                # Prepare movies data
                 movies_data = []
                 
-                # Extract details for each movie
                 for container in movie_containers:
                     movie_details = cls.extract_movie_details(str(container))
                     
-                    # Add valid movie details
                     if movie_details:
                         movies_data.append((
                             movie_details['rank'],
@@ -140,14 +114,26 @@ class IMDbScraper:
         return []
 
 def main():
-    # Scrape movies
-    movies_data = IMDbScraper.scrape_top_250()
+    db_name = DB_CONFIG['database']
+    connection = DatabaseManager.create_connection()
+    if connection:
+        logging.info("Creating database and tables if they do not exist")
+        DatabaseManager.create_database_if_not_exists(connection, db_name)
+        connection.database = db_name  
+        DatabaseManager.create_movies_table_if_not_exists(connection)
+        connection.close()
+
+    scraper = IMDbScraper()
+    movies_data = scraper.scrape_top_250()
     
-    # Save to database
     if movies_data:
-        connection = DatabaseManager.create_connection()
+        connection = mysql.connector.connect(
+            host=DB_CONFIG['host'],
+            user=DB_CONFIG['user'],
+            password=DB_CONFIG['password'],
+            database=db_name
+        )
         if connection:
-            DatabaseManager.create_movies_table(connection)
             DatabaseManager.insert_movies(connection, movies_data)
             connection.close()
 

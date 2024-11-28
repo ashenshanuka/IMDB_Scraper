@@ -2,7 +2,7 @@
 DB_CONFIG = {
     'host': 'localhost',
     'user': 'root',
-    'password': '1234',
+    'password': '',
     'database': 'imdb_movies'
 }
 
@@ -21,3 +21,5 @@ SCRAPER_CONFIG = {
     'retry_attempts': 3,
     'retry_delay': 5
 }
+
+

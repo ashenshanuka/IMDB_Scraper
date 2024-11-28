@@ -11,42 +11,61 @@ class DatabaseManager:
         :return: Database connection or None
         """
         try:
-            connection = mysql.connector.connect(**DB_CONFIG)
+            connection = mysql.connector.connect(
+                host=DB_CONFIG['host'],
+                user=DB_CONFIG['user'],
+                password=DB_CONFIG['password']
+            )
+            logging.info("Successfully connected to MySQL server")
             return connection
         except mysql.connector.Error as error:
             logging.error(f"Database connection error: {error}")
             return None
 
     @staticmethod
-    def create_movies_table(connection):
+    def create_database_if_not_exists(connection, db_name):
         """
-        Create or reset movies table
+        Create database if it does not exist
+        
+        :param connection: MySQL database connection
+        :param db_name: Name of the database to create
+        """
+        logging.info(f"Checking/creating database '{db_name}'")
+        cursor = connection.cursor()
+        try:
+            cursor.execute(f"CREATE DATABASE IF NOT EXISTS {db_name}")
+            logging.info(f"Database '{db_name}' checked/created successfully")
+        except mysql.connector.Error as error:
+            logging.error(f"Error creating database '{db_name}': {error}")
+        finally:
+            cursor.close()
+
+    @staticmethod
+    def create_movies_table_if_not_exists(connection):
+        """
+        Create movies table if it does not exist
         
         :param connection: MySQL database connection
         """
         cursor = connection.cursor()
-        
         try:
-            # Drop existing table if it exists
-            cursor.execute("DROP TABLE IF EXISTS top_movies")
-            
-            # Create new table with comprehensive schema
             create_table_query = """
-            CREATE TABLE top_movies (
+            CREATE TABLE IF NOT EXISTS top_movies (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 movie_rank INT NOT NULL,
                 movie_title VARCHAR(255) NOT NULL,
                 release_year INT,
                 duration_minutes INT,
                 imdb_rating DECIMAL(3,1),
-                total_ratings INT
+                total_ratings INT,
+                created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                status INT DEFAULT 1
             )
             """
-            
             cursor.execute(create_table_query)
             connection.commit()
-            logging.info("Movies table created successfully")
-        
+            logging.info("Movies table checked/created successfully")
         except mysql.connector.Error as error:
             logging.error(f"Error creating movies table: {error}")
         finally:
