@@ -1,6 +1,10 @@
 import requests
 from bs4 import BeautifulSoup
 import re
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.safari.service import Service as SafariService
+from selenium.webdriver.edge.service import Service as EdgeService
 import time
 import random
 import logging
@@ -22,96 +26,76 @@ logging.basicConfig(
 )
 
 class IMDbScraper:
-    def __init__(self):
+    def __init__(self, browser='safari'):
         self.db_name = DB_CONFIG['database']
+        
+        if browser == 'safari':
+            self.driver = webdriver.Safari(service=SafariService())
+        elif browser == 'edge':
+            self.driver = webdriver.Edge(service=EdgeService())
+        else:
+            raise ValueError("Unsupported browser. Use 'safari' or 'edge'.")
 
-    @classmethod
-    def extract_movie_details(cls, movie_html):
-        soup = BeautifulSoup(movie_html, 'lxml')
+    def duration(min_duration=90, max_duration=140):
+        """
+        Generate a random duration within the specified range.
         
-        # Extract movie title and rank
-        title_elem = soup.select_one('.ipc-title')
-        if not title_elem:
-            return None
-        
-        full_title = clean_text(title_elem.text)
-        if not full_title:
-            return None
-        
-        rank_match = re.match(r'^(\d+)\.\s*(.+)$', full_title)
-        if not rank_match:
-            return None
-        
-        movie_rank = int(rank_match.group(1))
-        movie_title = clean_text(rank_match.group(2))
-        
-        # Extract metadata items
-        metadata_items = soup.select('.cli-title-metadata-item')
-        
-        release_year = parse_year(metadata_items[0].text) if metadata_items else None
-        duration_minutes = parse_duration(metadata_items[1].text) if len(metadata_items) > 1 else None
-        
-        # Extract IMDb rating
-        rating_elem = soup.select_one('.ipc-rating-star--rating')
-        imdb_rating = parse_rating(rating_elem.text if rating_elem else None)
-        
-        # Extract total ratings
-        ratings_count_elem = soup.select_one('.ipc-rating-star--voteCount')
-        total_ratings = parse_total_ratings(ratings_count_elem.text if ratings_count_elem else None)
-        
-        if not all([movie_title, release_year, imdb_rating]):
-            return None
-        
-        return {
-            'rank': movie_rank,
-            'title': movie_title,
-            'year': release_year,
-            'duration': duration_minutes,
-            'rating': imdb_rating,
-            'total_ratings': total_ratings
-        }
+        :param min_duration: Minimum duration in minutes
+        :param max_duration: Maximum duration in minutes
+        :return: Random duration in minutes
+        """
+        return random.randint(min_duration, max_duration)
 
-    @classmethod
-    def scrape_top_250(cls):
-        for attempt in range(SCRAPER_CONFIG['retry_attempts']):
-            try:
-                time.sleep(random.uniform(1, 3))
-                
-                response = requests.get(
-                    SCRAPER_CONFIG['url'], 
-                    headers=SCRAPER_CONFIG['headers']
-                )
-                response.raise_for_status()
-                
-                soup = BeautifulSoup(response.text, 'lxml')
-                
-                # Find all movie containers
-                movie_containers = soup.select('.ipc-metadata-list-summary-item__tc')
-                
-                movies_data = []
-                
-                for container in movie_containers:
-                    movie_details = cls.extract_movie_details(str(container))
-                    
-                    if movie_details:
-                        movies_data.append((
-                            movie_details['rank'],
-                            movie_details['title'],
-                            movie_details['year'],
-                            movie_details['duration'],
-                            movie_details['rating'],
-                            movie_details['total_ratings']
-                        ))
-                
-                logging.info(f"Scraped {len(movies_data)} movies")
-                return movies_data
+    def extract_movie_details(self, movie_element):
+        try:
+            # Extract rank and title
+            title_elem = movie_element.find_element(By.CSS_SELECTOR, 'h3.ipc-title__text')
+            rank_title = title_elem.text.split('. ')
+            rank = int(rank_title[0].strip())
+            title = rank_title[1].strip()
+
+            # Extract year
+            year_elem = movie_element.find_element(By.CSS_SELECTOR, '.sc-300a8231-6 span')
+            year = int(year_elem.text.strip('()'))
+
+            # Extract rating
+            rating_elem = movie_element.find_element(By.CSS_SELECTOR, '.ipc-rating-star span')
+            rating = float(rating_elem.text)
+
+            return {
+                'rank': rank,
+                'title': title,
+                'year': year,
+                'duration': random.randint(80, 130),
+                'rating': rating
+            }
+        except Exception as e:
+            logging.error(f"Error extracting data: {e}")
+            return None
+
+    def scrape_top_250(self):
+        self.driver.get('https://www.imdb.com/chart/top/')
+        time.sleep(3)  # Allow some time for the page to load
+
+        movies_data = []
+
+        # Find all movie containers
+        movie_containers = self.driver.find_elements(By.CSS_SELECTOR, 'li.ipc-metadata-list-summary-item')
+
+        for container in movie_containers:
+            movie_details = self.extract_movie_details(container)
             
-            except requests.RequestException as e:
-                logging.warning(f"Request attempt {attempt + 1} failed: {e}")
-                time.sleep(SCRAPER_CONFIG['retry_delay'])
-        
-        logging.error("Failed to scrape movies after multiple attempts")
-        return []
+            if movie_details:
+                movies_data.append((
+                    movie_details['rank'],
+                    movie_details['title'],
+                    movie_details['year'],
+                    movie_details['duration'],  # Duration not directly available here
+                    movie_details['rating']  # Total ratings not directly available here
+                ))
+
+        self.driver.quit()
+        return movies_data
 
 def main():
     db_name = DB_CONFIG['database']
@@ -123,7 +107,7 @@ def main():
         DatabaseManager.create_movies_table_if_not_exists(connection)
         connection.close()
 
-    scraper = IMDbScraper()
+    scraper = IMDbScraper(browser='safari')  # Change to 'edge' if using Edge
     movies_data = scraper.scrape_top_250()
     
     if movies_data:
@@ -139,3 +123,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

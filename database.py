@@ -57,7 +57,6 @@ class DatabaseManager:
                 release_year INT,
                 duration_minutes INT,
                 imdb_rating DECIMAL(3,1),
-                total_ratings INT,
                 created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 status INT DEFAULT 1
@@ -83,8 +82,8 @@ class DatabaseManager:
         
         insert_query = """
         INSERT INTO top_movies 
-        (movie_rank, movie_title, release_year, duration_minutes, imdb_rating, total_ratings) 
-        VALUES (%s, %s, %s, %s, %s, %s)
+        (movie_rank, movie_title, release_year, duration_minutes, imdb_rating) 
+        VALUES (%s, %s, %s, %s, %s)
         """
         
         try:
