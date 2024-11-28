@@ -107,7 +107,7 @@ def main():
         DatabaseManager.create_movies_table_if_not_exists(connection)
         connection.close()
 
-    scraper = IMDbScraper(browser='safari')  # Change to 'edge' if using Edge
+    scraper = IMDbScraper(browser='edge')  # Change to 'edge' if using Edge
     movies_data = scraper.scrape_top_250()
     
     if movies_data:
